@@ -1,0 +1,8 @@
+main.c:75:5:main	32	static
+main.c:127:6:printWelcomeMsg	8	static
+main.c:135:9:readeUserInput	16	static
+main.c:143:9:processUserInput	80	static
+main.c:212:6:SystemClock_Config	88	static
+main.c:252:13:MX_USART2_UART_Init	8	static
+main.c:285:13:MX_GPIO_Init	40	static
+main.c:313:6:Error_Handler	4	static,ignoring_inline_asm
