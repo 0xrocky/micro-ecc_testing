@@ -43,13 +43,13 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+RNG_HandleTypeDef hrng;
 UART_HandleTypeDef huart2;
+
 /* USER CODE BEGIN PV */
 uECC_Curve curve;
 uint8_t privateKey[21] = { 0 }; /* 21 bytes long with first byte 0 in secp160r1 */
 uint8_t publicKey[40] = { 0 }; /* 2 * curve size bytes long (secp160r1: 160*2/8) */
-uint8_t privateKey2[21] = { 0x00, 0x75, 0x96, 0xC8, 0xE2, 0xFD, 0xAD, 0x27, 0x52, 0x5B, 0x3A, 0xE4, 0xCC, 0x77, 0x37, 0x46, 0xBC, 0x62, 0xA7, 0x67, 0x6E };
-uint8_t publicKey2[42] = {0x07, 0x0C, 0x00, 0x5A, 0x6D, 0xC5, 0x96, 0x0B, 0x2C, 0x7D, 0x8E, 0x85, 0x47, 0x73, 0xA9, 0xC8, 0x77, 0x58, 0xC3, 0xBE, 0x97, 0x07, 0x6E, 0xE6, 0xF5, 0x00, 0x67, 0xC3, 0x9E, 0x4F, 0xD1, 0xCA, 0x12, 0xAB, 0x23, 0x27, 0x45, 0xF0, 0x5C, 0x22, 0xA1, 0xDB};
 uint8_t hashMsg[32] = { 0x2C, 0xF2, 0x4D, 0xBA, 0x5F, 0xB0, 0xA3, 0x0E, 0x26, 0xE8, 0x3B, 0x2A, 0xC5, 0xB9, 0xE2, 0x9E, 0x1B, 0x16, 0x1E, 0x5C, 0x1F, 0xA7, 0x42, 0x5E, 0x73, 0x04, 0x33, 0x62, 0x93, 0x8B, 0x98, 0x24 }; /* "Hello" SHA-256 hash */
 uint8_t signHash[40] = { 0 };
 /* USER CODE END PV */
@@ -58,10 +58,12 @@ uint8_t signHash[40] = { 0 };
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_RNG_Init(void);
 /* USER CODE BEGIN PFP */
 void printWelcomeMsg( void );
 uint8_t readeUserInput( void );
 uint8_t processUserInput( uint8_t opt );
+static int trng( uint8_t *dest, unsigned size );
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -79,6 +81,7 @@ int main(void)
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
+
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
@@ -87,12 +90,14 @@ int main(void)
 
   /* Configure the system clock */
   SystemClock_Config();
+
   /* USER CODE BEGIN SysInit */
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_RNG_Init();
   /* USER CODE BEGIN 2 */
   /* DWT */
   volatile uint32_t *DWT_CONTROL = (uint32_t *) 0xE0001000;
@@ -126,8 +131,8 @@ printMessage:
 
 void printWelcomeMsg( void )
 {
-	HAL_UART_Transmit( &huart2, ( uint8_t* )"\033[0;0H", strlen( "\033[0;0H" ), HAL_MAX_DELAY );
-	HAL_UART_Transmit( &huart2, ( uint8_t* )"\033[2J", strlen( "\033[2J" ), HAL_MAX_DELAY );
+	HAL_UART_Transmit( &huart2, ( uint8_t* )"\033[0;0H", strlen( "\033[0;0H" ), HAL_MAX_DELAY ); /* Reset screen point to the top */
+	HAL_UART_Transmit( &huart2, ( uint8_t* )"\033[2J", strlen( "\033[2J" ), HAL_MAX_DELAY ); /* Clear out the terminal program */
 	HAL_UART_Transmit( &huart2, ( uint8_t* )WELCOME, strlen ( WELCOME ), HAL_MAX_DELAY );
 	HAL_UART_Transmit( &huart2, ( uint8_t* )MENU, strlen ( MENU ), HAL_MAX_DELAY );
 }
@@ -143,6 +148,7 @@ uint8_t readeUserInput( void )
 uint8_t processUserInput( uint8_t opt )
 {
 	char msg[ 40 ];
+	char buf[ 1 ];
 	uint32_t start = 0, end = 0, elapsed = 0;
 
 	if ( opt < 1 || opt > 4 )
@@ -151,38 +157,54 @@ uint8_t processUserInput( uint8_t opt )
 	sprintf( msg, "%d", opt );
 	HAL_UART_Transmit( &huart2, ( uint8_t* )msg, strlen ( msg ), HAL_MAX_DELAY );
 
-	switch( opt )
+	switch ( opt )
 	{
 		case 1:
 			start = DWT->CYCCNT;
 			HAL_GPIO_TogglePin( GPIOD, GPIO_PIN_15 );
-			HAL_Delay( 1000 );
 			end = DWT->CYCCNT;
 			break;
 		case 2:
 			start = DWT->CYCCNT;
 			sprintf( msg, "\r\nLED status: %s", HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_15) == GPIO_PIN_SET ? "ON" : "OFF" );
-			HAL_UART_Transmit( &huart2, ( uint8_t* )msg, strlen ( msg ), HAL_MAX_DELAY );
 			end = DWT->CYCCNT;
+			HAL_UART_Transmit( &huart2, ( uint8_t* )msg, strlen ( msg ), HAL_MAX_DELAY );
 			break;
 		case 3:
 			start = DWT->CYCCNT;
-			if( uECC_make_key( publicKey, privateKey, curve ) )
+			uECC_set_rng( &trng );
+			if ( uECC_make_key( publicKey, privateKey, curve ) )
 				sprintf( msg, "\r\nuECC make key success!\r\n" );
 			else
 				sprintf( msg, "\r\nuECC make key failure!\r\n" );
 			HAL_UART_Transmit( &huart2, ( uint8_t* )msg, strlen ( msg ), HAL_MAX_DELAY );
 
-			if( uECC_sign( privateKey2, hashMsg, sizeof( hashMsg ), signHash, curve ) )
+			HAL_UART_Transmit( &huart2, ( uint8_t* )"\r\nThe HELLO SHA-256 hash: ", strlen ( "\r\nThe HELLO SHA-256 hash: " ), HAL_MAX_DELAY );
+			for ( int i = 0; i < sizeof( hashMsg ); i++ )
+			{
+				HAL_UART_Transmit( &huart2, ( uint8_t* )"0x", strlen( "0x" ), HAL_MAX_DELAY );
+				sprintf( buf, "%.2X", hashMsg[ i ] );
+				HAL_UART_Transmit( &huart2, ( uint8_t* )buf, 1, HAL_MAX_DELAY );
+			}
+			HAL_UART_Transmit( &huart2, ( uint8_t* )"\r\n", strlen ( "\r\n" ), HAL_MAX_DELAY );
+
+
+			if ( uECC_sign( privateKey, hashMsg, sizeof( hashMsg ), signHash, curve ) )
 				sprintf( msg, "\r\nuECC sign success!\r\n" );
 			else
 				sprintf( msg, "\r\nuECC sign failure!\r\n" );
 			HAL_UART_Transmit( &huart2, ( uint8_t* )msg, strlen ( msg ), HAL_MAX_DELAY );
 
-			sprintf( msg, "%x", signHash );
-			HAL_UART_Transmit( &huart2, ( uint8_t* )msg, strlen ( msg ), HAL_MAX_DELAY );
+			HAL_UART_Transmit( &huart2, ( uint8_t* )"\r\nThe sign of the HELLO SHA-256 hash: ", strlen ( "\r\nThe sign of the HELLO SHA-256 hash: " ), HAL_MAX_DELAY );
+			for ( int i = 0; i < sizeof( signHash ); i++ )
+			{
+				HAL_UART_Transmit( &huart2, ( uint8_t* )"0x", strlen( "0x" ), HAL_MAX_DELAY );
+				sprintf( buf, "%.X", signHash[ i ] );
+				HAL_UART_Transmit( &huart2, ( uint8_t* )buf, 1, HAL_MAX_DELAY );
+			}
+			HAL_UART_Transmit( &huart2, ( uint8_t* )"\r\n", strlen ( "\r\n" ), HAL_MAX_DELAY );
 
-			if( uECC_verify( publicKey2, hashMsg, sizeof( hashMsg ), signHash, curve ) )
+			if ( uECC_verify( publicKey, hashMsg, sizeof( hashMsg ), signHash, curve ) )
 				sprintf( msg, "\r\nuECC verify success!\r\n" );
 			else
 				sprintf( msg, "\r\nuECC verify failure!\r\n" );
@@ -194,7 +216,8 @@ uint8_t processUserInput( uint8_t opt )
 			HAL_Delay( 1000 );
 			return 2;
 	}
-	if( end >= start )
+	/* Computing clock cycles */
+	if ( end >= start )
 	{
 		elapsed = end - start;
 		sprintf( msg, "\r\n%lu cycles", elapsed );
@@ -203,6 +226,21 @@ uint8_t processUserInput( uint8_t opt )
 	}
 	else
 		return 0;
+}
+
+static int trng( uint8_t *dest, unsigned size )
+{
+	while ( size )
+	{
+		/* uint8_t random = rand() % 1000 + 1;*/
+		uint32_t random = 0;
+		if ( HAL_RNG_GenerateRandomNumber( &hrng, &random ) != HAL_OK )
+			Error_Handler();
+	    *dest = random;
+	    ++dest;
+	    --size;
+	}
+	return 1;
 }
 
 /**
@@ -224,7 +262,12 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 16;
+  RCC_OscInitStruct.PLL.PLLN = 192;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -245,19 +288,37 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief RNG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RNG_Init(void)
+{
+  /* USER CODE BEGIN RNG_Init 0 */
+  /* USER CODE END RNG_Init 0 */
+
+  /* USER CODE BEGIN RNG_Init 1 */
+  /* USER CODE END RNG_Init 1 */
+  hrng.Instance = RNG;
+  if (HAL_RNG_Init(&hrng) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RNG_Init 2 */
+  /* USER CODE END RNG_Init 2 */
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
   */
 static void MX_USART2_UART_Init(void)
 {
-
   /* USER CODE BEGIN USART2_Init 0 */
-
   /* USER CODE END USART2_Init 0 */
 
   /* USER CODE BEGIN USART2_Init 1 */
-
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 115200;
@@ -272,9 +333,7 @@ static void MX_USART2_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
-
   /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
@@ -299,11 +358,9 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
 }
 
 /* USER CODE BEGIN 4 */
-
 /* USER CODE END 4 */
 
 /**
