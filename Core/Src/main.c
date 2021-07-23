@@ -191,7 +191,7 @@ uint8_t processUserInput( uint8_t choice )
 			end = DWT->CYCCNT;
 			if ( !result )
 			{
-		        flag_make_clr(); /* clear the make flags */
+				flag_make_clr(); /* clear the make flags */
 				sprintf( msg, "\r\nuECC make key failure!" );
 			}
 			else
@@ -225,12 +225,12 @@ uint8_t processUserInput( uint8_t choice )
 			end = DWT->CYCCNT;
 			if ( !result )
 			{
-		        flag_sign_clr(); /* clear the sign flags */
+				flag_sign_clr(); /* clear the sign flags */
 				sprintf( msg, "\r\nuECC sign failure!" );
 			}
 			else
 			{
-		        flag_sign_set(); /* set the sign flags */
+				flag_sign_set(); /* set the sign flags */
 				sprintf( msg, "\r\nuECC sign success!" );
 			}
 			HAL_UART_Transmit( &huart2, ( uint8_t* )msg, strlen ( msg ), HAL_MAX_DELAY );
